@@ -120,6 +120,24 @@ function loadServiceAccount(
     return parseServiceAccount(fileContents);
   }
 
+  const b64 = process.env.GOOGLE_CREDENTIALS_BASE64;
+  if (b64) {
+    const decoded = Buffer.from(b64, "base64").toString("utf8");
+    return parseServiceAccount(decoded);
+  }
+
+  const appCredsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (appCredsPath) {
+    const resolved = path.resolve(ROOT_DIR, appCredsPath);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(
+        `Expected GOOGLE_APPLICATION_CREDENTIALS to point to an existing file, but "${resolved}" was not found.`
+      );
+    }
+    const fileContents = fs.readFileSync(resolved, "utf8");
+    return parseServiceAccount(fileContents);
+  }
+
   return undefined;
 }
 
@@ -138,8 +156,15 @@ function loadGoogleConfig(env: z.infer<typeof envSchema>): GoogleConfig {
     env.GOOGLE_OAUTH_CLIENT_ID &&
     env.GOOGLE_OAUTH_CLIENT_SECRET &&
     env.GOOGLE_OAUTH_REDIRECT_URI &&
-    env.GOOGLE_OAUTH_TOKEN_PATH
+    (env.GOOGLE_OAUTH_TOKEN_PATH || process.env.OAUTH_TOKEN_PATH)
   ) {
+    const tokenPath =
+      env.GOOGLE_OAUTH_TOKEN_PATH
+        ? env.GOOGLE_OAUTH_TOKEN_PATH
+        : path.resolve(
+            ROOT_DIR,
+            process.env.OAUTH_TOKEN_PATH as string
+          );
     return {
       mode: "oauth",
       exportFolderId: env.GOOGLE_EXPORT_FOLDER_ID || undefined,
@@ -147,7 +172,7 @@ function loadGoogleConfig(env: z.infer<typeof envSchema>): GoogleConfig {
         clientId: env.GOOGLE_OAUTH_CLIENT_ID,
         clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET,
         redirectUri: env.GOOGLE_OAUTH_REDIRECT_URI,
-        tokenPath: env.GOOGLE_OAUTH_TOKEN_PATH,
+        tokenPath: tokenPath,
       },
     };
   }

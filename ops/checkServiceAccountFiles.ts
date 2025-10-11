@@ -30,14 +30,21 @@ async function main() {
     console.log("OpenAI API key appears set.");
   }
 
-  if (process.env.GOOGLE_CREDENTIALS_JSON_PATH) {
-    const resolved = path.resolve(process.env.GOOGLE_CREDENTIALS_JSON_PATH);
+  const fileEnv =
+    process.env.GOOGLE_CREDENTIALS_JSON_PATH ||
+    process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (fileEnv) {
+    const resolved = path.resolve(fileEnv);
     console.log(`Credentials sourced from file: ${resolved}`);
     const stats = fs.statSync(resolved);
     console.log(`  size: ${stats.size} bytes`);
     console.log(`  permissions: ${stats.mode.toString(8)}`);
   } else {
-    console.log("Credentials sourced from GOOGLE_CREDENTIALS_JSON environment variable.");
+    if (process.env.GOOGLE_CREDENTIALS_BASE64) {
+      console.log("Credentials sourced from GOOGLE_CREDENTIALS_BASE64 environment variable.");
+    } else {
+      console.log("Credentials sourced from GOOGLE_CREDENTIALS_JSON environment variable.");
+    }
   }
 }
 

@@ -72,15 +72,15 @@ export const StrategistOutput = z.object({
   motionOrTopic: z.string().nullable().optional(),
   context: z.string().nullable().optional(),
   firstPrinciples: Framework,
-  govCase: z.array(Argument).min(3).max(6),
-  oppCase: z.array(Argument).min(3).max(6),
+  govCase: z.array(Argument).min(2).max(6),
+  oppCase: z.array(Argument).min(2).max(6),
   extensions: z.array(z.string()).min(2).max(6),
 });
 export type TStrategistOutput = z.infer<typeof StrategistOutput>;
 
 export const ResearchAdjOutput = z.object({
-  examplesBank: z.array(Example).min(5).max(12),
+  examplesBank: z.array(Example).min(3).max(6),
   weighing: Weighing,
-  drills: z.array(z.string()).min(2).max(8),
+  drills: z.array(z.string()).min(2).max(4),
 });
 export type TResearchAdjOutput = z.infer<typeof ResearchAdjOutput>;

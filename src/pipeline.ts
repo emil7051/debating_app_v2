@@ -6,7 +6,7 @@ import OpenAI from "openai";
 import pdfParse from "pdf-parse";
 
 import { AgentInput, AgentRuntimeConfig, runResearchAgent, runStrategistAgent, runSynthesisAgent } from "./agents";
-import { appConfig, type AppConfig } from "./config";
+import { appConfig } from "./config";
 import { publishLessonPack } from "./googleDocs";
 import { LessonPack } from "./schemas";
 
@@ -81,9 +81,9 @@ export async function preprocessDocument(filePath: string): Promise<Preprocessed
   };
 }
 
-async function discoverInputFiles(config: AppConfig): Promise<string[]> {
+async function discoverInputFiles(inputDir: string): Promise<string[]> {
   const files = await globby(["**/*.{pdf,md,markdown}"], {
-    cwd: config.notesInputDir,
+    cwd: inputDir,
     absolute: true,
     dot: false,
   });
@@ -143,15 +143,22 @@ async function processSingleFile(params: {
   }
 }
 
-export async function runPipeline(client: OpenAI): Promise<FileProcessingResult[]> {
+export async function runPipeline(
+  client: OpenAI,
+  options?: {
+    inputDir?: string;
+  }
+): Promise<FileProcessingResult[]> {
   const runtime: AgentRuntimeConfig = {
     client,
     models: appConfig.models,
   };
 
-  const files = await discoverInputFiles(appConfig);
+  const notesInputDir = options?.inputDir ?? appConfig.notesInputDir;
+
+  const files = await discoverInputFiles(notesInputDir);
   if (files.length === 0) {
-    console.warn(`No input files found in ${appConfig.notesInputDir}`);
+    console.warn(`No input files found in ${notesInputDir}`);
     return [];
   }
 

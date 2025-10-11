@@ -24,7 +24,10 @@ export interface AgentInput {
   contextHint?: string | null;
 }
 
-const MAX_ATTEMPTS_DEFAULT = 3;
+const MAX_ATTEMPTS_DEFAULT = Math.max(
+  1,
+  Number(process.env.JSON_MAX_ATTEMPTS ?? 5)
+);
 
 const STRATEGIST_FORMAT_HINT = `{
   "motionOrTopic": string | null,
