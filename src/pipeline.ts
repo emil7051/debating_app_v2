@@ -145,20 +145,17 @@ async function processSingleFile(params: {
 
 export async function runPipeline(
   client: OpenAI,
-  options?: {
-    inputDir?: string;
-  }
+  opts?: { inputDir?: string }
 ): Promise<FileProcessingResult[]> {
   const runtime: AgentRuntimeConfig = {
     client,
     models: appConfig.models,
   };
 
-  const notesInputDir = options?.inputDir ?? appConfig.notesInputDir;
-
-  const files = await discoverInputFiles(notesInputDir);
+  const inputDir = opts?.inputDir ?? appConfig.notesInputDir;
+  const files = await discoverInputFiles(inputDir);
   if (files.length === 0) {
-    console.warn(`No input files found in ${notesInputDir}`);
+    console.warn(`No input files found in ${inputDir}`);
     return [];
   }
 
