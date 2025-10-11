@@ -52,7 +52,7 @@ type GoogleConfig =
 const envSchema = z
   .object({
     OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
-    NOTES_INPUT_DIR: z.string().trim().default("War"),
+    NOTES_INPUT_DIR: z.string().trim().default("for_processing"),
     OPENAI_MODEL_STRATEGIST: z.string().trim().default("gpt-5-mini-2025-08-07"),
     OPENAI_MODEL_RESEARCH: z.string().trim().default("gpt-5-mini-2025-08-07"),
     OPENAI_MODEL_SYNTHESIZER: z.string().trim().default("gpt-5-mini-2025-08-07"),
