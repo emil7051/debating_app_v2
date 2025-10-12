@@ -5,9 +5,15 @@ import { globby } from "globby";
 import OpenAI from "openai";
 import pdfParse from "pdf-parse";
 
-import { AgentInput, AgentRuntimeConfig, runResearchAgent, runStrategistAgent, runSynthesisAgent } from "./agents";
+import {
+  AgentInput,
+  AgentRuntimeConfig,
+  runPreprocessorAgent,
+  runResearchAgent,
+  runStrategistAgent,
+  runSynthesisAgent,
+} from "./agents";
 import { appConfig } from "./config";
-import { publishLessonPack } from "./googleDocs";
 import { LessonPack } from "./schemas";
 
 const MAX_TEXT_CHARS = 18000;
@@ -104,19 +110,34 @@ async function processSingleFile(params: {
   runtime: AgentRuntimeConfig;
 }): Promise<FileProcessingResult> {
   const { doc, runtime } = params;
-  const agentInput = buildAgentInput(doc);
 
   try {
+    // Step 0: Read & simple normalization (existing)
+    const initialAgentInput = buildAgentInput(doc);
+
+    // Step 1: Preprocessor agent (NEW) — produce { title, markdown }
+    const pre = await runPreprocessorAgent(runtime, initialAgentInput);
+
+    // Build downstream input from the Preprocessor output
+    const normalizedInput: AgentInput = {
+      filename: pre.title || initialAgentInput.filename,
+      documentText: pre.markdown,
+      contextHint: pre.title || initialAgentInput.contextHint,
+    };
+
+    // Step 2 & 3: Strategist + Research (in parallel), now consuming normalized markdown
     const [strategist, researcher] = await Promise.all([
-      runStrategistAgent(runtime, agentInput),
-      runResearchAgent(runtime, agentInput),
+      runStrategistAgent(runtime, normalizedInput),
+      runResearchAgent(runtime, normalizedInput),
     ]);
 
+    // Step 4: Synthesis/QA (NEW signature includes preprocessor content)
     const pack = await runSynthesisAgent({
       runtime,
+      preprocessor: pre,
       strategist,
       researcher,
-      input: agentInput,
+      input: normalizedInput,
     });
 
     const finalPack = LessonPack.parse({
@@ -142,6 +163,8 @@ async function processSingleFile(params: {
     };
   }
 }
+
+import { publishLessonPack } from "./googleDocs";
 
 export async function runPipeline(
   client: OpenAI,

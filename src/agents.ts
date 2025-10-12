@@ -7,11 +7,14 @@ import {
   TResearchAdjOutput,
   TStrategistOutput,
   ResearchAdjOutput,
+  PreprocessorOutput,
+  TPreprocessorOutput,
 } from "./schemas";
 
 export type AgentRuntimeConfig = {
   client: OpenAI;
   models: {
+    preprocessor: string;
     strategist: string;
     research: string;
     synthesizer: string;
@@ -29,6 +32,7 @@ const MAX_ATTEMPTS_DEFAULT = Math.max(
   Number(process.env.JSON_MAX_ATTEMPTS ?? 5)
 );
 
+// ===== Shared format hints (kept from existing app) =====
 const STRATEGIST_FORMAT_HINT = `{
   "motionOrTopic": string | null,
   "context": string | null,
@@ -118,6 +122,18 @@ const LESSON_FORMAT_HINT = `{
 
 Argument and Example match the definitions above. Include all keys, even when arrays are empty.`;
 
+// ===== NEW: shared debate context lifted from your earlier workflow =====
+const sharedDebateContext = `
+You are a world-class debate coach and adjudicator across British Parliamentary (WUDC) and Australasian formats.
+Be strict about:
+- explicit burdens/metrics and actor analysis,
+- mechanism chains → plausible impacts,
+- comparative worlds and extension space (OG/OO/CG/CO),
+- no fabricated facts: any new factual claim MUST include a real, reputable URL.
+When in doubt, err on explainability for senior high-school students, not policy jargon.
+`;
+
+// ===== Internal helper to extract content safely =====
 type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
@@ -209,17 +225,56 @@ async function callJsonModel<T>(params: {
   throw new Error("Failed to obtain a valid JSON response after multiple attempts");
 }
 
+// ===== NEW: Preprocessor agent =====
+export async function runPreprocessorAgent(
+  runtime: AgentRuntimeConfig,
+  input: AgentInput
+): Promise<TPreprocessorOutput> {
+  const PREPROCESSOR_FORMAT_HINT = `{
+    "title": string,
+    "markdown": string
+  }`;
+
+  const systemPrompt = `${sharedDebateContext}
+Normalize the input (pdf/markdown/text) into concise Markdown:
+- preserve headings/lists/tables
+- strip filler, timestamps, and disfluencies
+- keep any explicit adjudicator feedback verbatim in a blockquote section
+Return a short, descriptive title if possible. Return JSON only.`;
+
+  const userPrompt = `Document name: ${input.filename}
+${input.contextHint ? `Context hint: ${input.contextHint}\n` : ""}
+
+Raw text to normalize:
+${input.documentText}`;
+
+  return callJsonModel({
+    client: runtime.client,
+    model: runtime.models.preprocessor,
+    systemPrompt,
+    userPrompt,
+    schema: PreprocessorOutput,
+    formatHint: PREPROCESSOR_FORMAT_HINT,
+  });
+}
+
+// ===== Strategist agent (prompt aligned to your earlier version) =====
 export async function runStrategistAgent(
   runtime: AgentRuntimeConfig,
   input: AgentInput
 ): Promise<TStrategistOutput> {
-  const systemPrompt =
-    "You are a debating strategist creating structured cases for competitive debate." +
-    " Return JSON that exactly matches the provided schema.";
+  const systemPrompt = `${sharedDebateContext}
+From the normalized notes, produce:
+- First principles (burden, metric, assumptions, theories, optional tests)
+- 3–5 GOV arguments and 3–5 OPP arguments (claim → mechanism → stakeholders → impacts → preempts → examples if already present)
+- 2–6 extension lanes for BP closing teams or Australs 3rd speaker
+- Optional: motion/topic and compact context
+Do not invent factual examples here; reference only what's in the notes.`;
 
-  const userPrompt = `Document name: ${input.filename}\n\n${
-    input.contextHint ? `Context hint: ${input.contextHint}\n\n` : ""
-  }Source notes:\n${input.documentText}`;
+  const userPrompt = `Document name: ${input.filename}
+${input.contextHint ? `Context hint: ${input.contextHint}\n` : ""}
+Normalized notes (Markdown):
+${input.documentText}`;
 
   return callJsonModel({
     client: runtime.client,
@@ -231,17 +286,21 @@ export async function runStrategistAgent(
   });
 }
 
+// ===== Research & Adjudication agent (prompt aligned to your earlier version) =====
 export async function runResearchAgent(
   runtime: AgentRuntimeConfig,
   input: AgentInput
 ): Promise<TResearchAdjOutput> {
-  const systemPrompt =
-    "You are a research adjudicator compiling examples, weighing, and drills for debate prep." +
-    " Return JSON that exactly matches the provided schema.";
+  const systemPrompt = `${sharedDebateContext}
+Curate diverse, verifiable examples with working URLs (jurisdictions/time periods/scales varied).
+For each example: what happened, why it matters, and how to use in debate. Include at least one reputable source URL.
+Provide adjudicator weighing (magnitude, probability, reversibility, time horizon), POI and Whip advice if relevant, and 2–8 drills.
+Do not include paywalled or dead links if you can avoid it.`;
 
-  const userPrompt = `Document name: ${input.filename}\n\n${
-    input.contextHint ? `Context hint: ${input.contextHint}\n\n` : ""
-  }Source notes:\n${input.documentText}`;
+  const userPrompt = `Document name: ${input.filename}
+${input.contextHint ? `Context hint: ${input.contextHint}\n` : ""}
+Normalized notes (Markdown):
+${input.documentText}`;
 
   return callJsonModel({
     client: runtime.client,
@@ -253,22 +312,30 @@ export async function runResearchAgent(
   });
 }
 
+// ===== Synthesis/QA agent (prompt aligned to your earlier version) =====
 export async function runSynthesisAgent(params: {
   runtime: AgentRuntimeConfig;
+  preprocessor: TPreprocessorOutput;
   strategist: TStrategistOutput;
   researcher: TResearchAdjOutput;
   input: AgentInput;
 }): Promise<TLessonPack> {
-  const { runtime, strategist, researcher, input } = params;
-  const systemPrompt =
-    "You are compiling a complete debating lesson pack that will be handed to coaches." +
-    " Merge the strategist and research outputs into a single pack." +
-    " Ensure all required fields are present and cite examples appropriately.";
+  const { runtime, preprocessor, strategist, researcher, input } = params;
+
+  const systemPrompt = `${sharedDebateContext}
+Merge strategist + research outputs into a single coherent LessonPack suitable for immediate teaching.
+Rules:
+- Only include factual content that originates from the Research agent (with sources) or was present in the input.
+- Dedupe overlapping examples and sources.
+- Create 2–3 rebuttal ladders that target the most central opposing claims.
+- Keep a concise tone; ensure sections are directly usable by senior high-school students.`;
 
   const userPrompt = JSON.stringify(
     {
       filename: input.filename,
       contextHint: input.contextHint,
+      sourceMarkdown: preprocessor.markdown,
+      preprocessor,
       strategist,
       researcher,
     },

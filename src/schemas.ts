@@ -18,6 +18,12 @@ export const Example = z.object({
 });
 export type Example = z.infer<typeof Example>;
 
+export const PreprocessorOutput = z.object({
+  title: z.string(),       // e.g., "Environment — Complete Debating Lesson Pack"
+  markdown: z.string(),    // normalized, concise Markdown
+});
+export type TPreprocessorOutput = z.infer<typeof PreprocessorOutput>;
+
 /** Core argumentative unit used in strategist / synthesis outputs */
 export const Argument = z.object({
   claim: z.string(),
