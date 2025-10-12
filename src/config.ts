@@ -49,6 +49,8 @@ type GoogleConfig =
       mode: "none";
     };
 
+type FormatStyle = "AUS" | "BP";
+
 const envSchema = z
   .object({
     OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
@@ -64,6 +66,7 @@ const envSchema = z
     GOOGLE_OAUTH_CLIENT_SECRET: z.string().trim().optional(),
     GOOGLE_OAUTH_REDIRECT_URI: z.string().trim().optional(),
     GOOGLE_OAUTH_TOKEN_PATH: z.string().trim().optional(),
+    FORMAT_STYLE: z.enum(["AUS", "BP"]).default("AUS"),
   })
   .transform((values) => ({
     ...values,
@@ -191,6 +194,7 @@ export const appConfig = {
     synthesizer: parsedEnv.OPENAI_MODEL_SYNTHESIZER,
   },
   google: loadGoogleConfig(parsedEnv),
+  format: parsedEnv.FORMAT_STYLE as FormatStyle,
 };
 
 export function createOpenAIClient(): OpenAI {

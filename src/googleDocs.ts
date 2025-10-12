@@ -148,7 +148,7 @@ class DocsBuilder {
 function caseHeadingLabels() {
   return appConfig.format === "AUS"
     ? { gov: "Affirmative Case", opp: "Negative Case" }
-    : { gov: "Government Case", opp: "Opposition Case" };
+    : { gov: "Government Case",  opp: "Opposition Case" };
 }
 
 function formatArgumentSection(
