@@ -119,6 +119,12 @@ async function processSingleFile(params: {
       input: agentInput,
     });
 
+    function curateSources(sources: SourceLink[]): SourceLink[] {
+      const external = sources.filter(s => /^https?:\/\//i.test(s.url));
+      const deduped = Array.from(new Map(external.map(s => [new URL(s.url).hostname + new URL(s.url).pathname, s])).values());
+      return deduped.slice(0, 5);
+    }
+
     const finalPack = LessonPack.parse({
       ...pack,
       inputMetadata: {

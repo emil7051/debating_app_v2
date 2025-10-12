@@ -2,7 +2,7 @@ import fs from "node:fs";
 
 import { google, docs_v1, drive_v3 } from "googleapis";
 
-import { GoogleConfiguration } from "./config";
+import { appConfig, GoogleConfiguration } from "./config";
 import { TLessonPack } from "./schemas";
 
 type DocsRequest = docs_v1.Schema$Request;
@@ -91,7 +91,8 @@ class DocsBuilder {
     });
     this.index += paragraphText.length;
   }
-
+  addSpacer(lines = 1) { this.addParagraph("".padEnd(lines, "\n")); }
+  
   addBulletList(items: string[]) {
     if (!items.length) return;
     const textBlock = items.map((item) => `${item}\n`).join("");
@@ -113,6 +114,30 @@ class DocsBuilder {
     });
     this.index += textBlock.length;
   }
+
+  addBoldLabelLine(label: string, text: string) {
+    const line = `${label}: ${text}\n`;
+    const start = this.index;
+    this.requests.push({ insertText: { location: { index: start }, text: line }});
+  this.requests.push({
+    updateTextStyle: {
+      range: { startIndex: start, endIndex: start + label.length + 1 },
+      textStyle: { bold: true },
+      fields: "bold"
+    }
+  });
+  this.index += line.length;
+}
+
+addPageBreak() {
+  this.requests.push({ insertPageBreak: { location: { index: this.index } }});
+  this.index += 1; // page break inserts a newline
+}
+
+function caseHeadingLabels() {
+  return appConfig.format === "AUS"
+    ? { gov: "Affirmative Case", opp: "Negative Case" }
+    : { gov: "Government Case",  opp: "Opposition Case" };
 }
 
 function formatArgumentSection(
@@ -166,6 +191,49 @@ function formatArgumentSection(
       });
     }
   });
+}
+
+async function insertAndFillTable(
+  docs: docs_v1.Docs, docId: string,
+  builder: DocsBuilder, headers: string[], rows: string[][]
+) {
+  // 1) Insert a (rows+1) x headers.length table at current index
+  const start = builder.index;
+  builder.getRequests().push({
+    insertTable: {
+      location: { index: start },
+      rows: rows.length + 1,
+      columns: headers.length
+    }
+  });
+  builder.index += 2; // table insertion adds a newline; exact index is resolved after we fetch
+
+  // 2) Apply current requests, then fetch document structure to get table cell indices
+  await docs.documents.batchUpdate({ documentId: docId, requestBody: { requests: builder.getRequests() }});
+  const doc = await docs.documents.get({ documentId: docId });
+
+  // 3) Locate the last inserted table (simplest: take the last Table element in body)
+  const bodyContent = doc.data.body?.content || [];
+  const tableEl = [...bodyContent].reverse().find(el => el.table);
+  if (!tableEl?.table) return;
+
+  // 4) Build a second batch to fill header row and body cells
+  const fill: DocsRequest[] = [];
+  headers.forEach((h, col) => {
+    const startIndex = tableEl.table!.tableRows[0].tableCells[col].startIndex! + 1;
+    fill.push({ insertText: { location: { index: startIndex }, text: h }});
+    fill.push({
+      updateTextStyle: {
+        range: { startIndex, endIndex: startIndex + h.length },
+        textStyle: { bold: true }, fields: "bold"
+      }
+    });
+  });
+  rows.forEach((r, row) => r.forEach((text, col) => {
+    const startIndex = tableEl.table!.tableRows[row + 1].tableCells[col].startIndex! + 1;
+    fill.push({ insertText: { location: { index: startIndex }, text }});
+  }));
+  await docs.documents.batchUpdate({ documentId: docId, requestBody: { requests: fill }});
 }
 
 function buildRequests(pack: TLessonPack): DocsRequest[] {

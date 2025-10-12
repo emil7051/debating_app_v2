@@ -189,6 +189,7 @@ export const appConfig = {
     synthesizer: parsedEnv.OPENAI_MODEL_SYNTHESIZER,
   },
   google: loadGoogleConfig(parsedEnv),
+  format: (process.env.FORMAT_STYLE ?? "AUS") as "AUS"|"BP",
 };
 
 export function createOpenAIClient(): OpenAI {

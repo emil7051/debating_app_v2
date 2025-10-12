@@ -41,6 +41,35 @@ export const Weighing = z.object({
   whipAdvice: z.array(z.string()).nullable().optional(),
 });
 
+export const WhenToUse = z.object({
+  scenario: z.string(),        // e.g., "Opp claims tech-only solvency"
+  why: z.string()              // short rationale
+});
+
+export const Argument = Argument.extend({
+  whenToUse: z.array(WhenToUse).optional(),
+  australsNotes: z.array(z.string()).optional(), // presentation tips for 1st/2nd/3rd speakers
+  weighingCues: z.array(z.string()).optional(),  // 1–3 bullets: how to weigh THIS argument
+  definitions: z.array(z.object({ term: z.string(), def: z.string() })).optional()
+});
+
+export const ExecutiveSummary = z.object({
+  overview: z.array(z.string()).min(3), // paragraphs (aim ~2–3 pages total)
+  keyConcepts: z.array(z.object({
+    concept: z.string(),
+    explanation: z.string(),
+    example: z.string().nullable(),
+    whenToUse: z.array(z.string())
+  })).min(4),
+  keyClashes: z.array(z.string()).min(3) // “value of nature”, “equity vs speed”, etc.
+});
+
+export const LessonPack = LessonPack.extend({
+  executiveSummary: ExecutiveSummary.optional()
+});
+
+export const SourceLink = SourceLink; // keep
+
 /** === Final pack shape === */
 export const LessonPack = z.object({
   title: z.string(),
