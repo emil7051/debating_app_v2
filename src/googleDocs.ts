@@ -1,9 +1,10 @@
 import fs from "node:fs";
 
-import { google, docs_v1, drive_v3 } from "googleapis";
+import { google, docs_v1 } from "googleapis";
+import type { JWT, OAuth2Client } from "google-auth-library";
 
-import { appConfig, GoogleConfiguration } from "./config";
-import { TLessonPack } from "./schemas";
+import { appConfig, type GoogleConfiguration } from "./config";
+import { type TLessonPack } from "./schemas";
 
 type DocsRequest = docs_v1.Schema$Request;
 
@@ -15,19 +16,20 @@ type PublishResult = {
 const DOCS_SCOPE = "https://www.googleapis.com/auth/documents";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 
-async function getAuthClient(config: GoogleConfiguration) {
+async function getAuthClient(
+  config: GoogleConfiguration
+): Promise<JWT | OAuth2Client | null> {
   if (config.mode === "none") {
     return null;
   }
 
   if (config.mode === "service-account") {
     const { serviceAccount } = config;
-    const jwtClient = new google.auth.JWT({
+    return new google.auth.JWT({
       email: serviceAccount.client_email,
       key: serviceAccount.private_key,
       scopes: [DOCS_SCOPE, DRIVE_SCOPE],
     });
-    return jwtClient;
   }
 
   const {
@@ -51,7 +53,7 @@ async function getAuthClient(config: GoogleConfiguration) {
 }
 
 class DocsBuilder {
-  private index = 1;
+  index = 1;
   private readonly requests: DocsRequest[] = [];
 
   getRequests(): DocsRequest[] {
@@ -91,10 +93,14 @@ class DocsBuilder {
     });
     this.index += paragraphText.length;
   }
-  addSpacer(lines = 1) { this.addParagraph("".padEnd(lines, "\n")); }
-  
+
+  addSpacer(lines = 1) {
+    this.addParagraph("".padEnd(lines, "\n"));
+  }
+
   addBulletList(items: string[]) {
     if (!items.length) return;
+
     const textBlock = items.map((item) => `${item}\n`).join("");
     const startIndex = this.index;
     this.requests.push({
@@ -118,26 +124,31 @@ class DocsBuilder {
   addBoldLabelLine(label: string, text: string) {
     const line = `${label}: ${text}\n`;
     const start = this.index;
-    this.requests.push({ insertText: { location: { index: start }, text: line }});
-  this.requests.push({
-    updateTextStyle: {
-      range: { startIndex: start, endIndex: start + label.length + 1 },
-      textStyle: { bold: true },
-      fields: "bold"
-    }
-  });
-  this.index += line.length;
-}
+    this.requests.push({
+      insertText: { location: { index: start }, text: line },
+    });
+    this.requests.push({
+      updateTextStyle: {
+        range: { startIndex: start, endIndex: start + label.length + 1 },
+        textStyle: { bold: true },
+        fields: "bold",
+      },
+    });
+    this.index += line.length;
+  }
 
-addPageBreak() {
-  this.requests.push({ insertPageBreak: { location: { index: this.index } }});
-  this.index += 1; // page break inserts a newline
+  addPageBreak() {
+    this.requests.push({
+      insertPageBreak: { location: { index: this.index } },
+    });
+    this.index += 1;
+  }
 }
 
 function caseHeadingLabels() {
   return appConfig.format === "AUS"
     ? { gov: "Affirmative Case", opp: "Negative Case" }
-    : { gov: "Government Case",  opp: "Opposition Case" };
+    : { gov: "Government Case", opp: "Opposition Case" };
 }
 
 function formatArgumentSection(
@@ -194,56 +205,70 @@ function formatArgumentSection(
 }
 
 async function insertAndFillTable(
-  docs: docs_v1.Docs, docId: string,
-  builder: DocsBuilder, headers: string[], rows: string[][]
+  docs: docs_v1.Docs,
+  docId: string,
+  builder: DocsBuilder,
+  headers: string[],
+  rows: string[][]
 ) {
-  // 1) Insert a (rows+1) x headers.length table at current index
   const start = builder.index;
   builder.getRequests().push({
     insertTable: {
       location: { index: start },
       rows: rows.length + 1,
-      columns: headers.length
-    }
+      columns: headers.length,
+    },
   });
-  builder.index += 2; // table insertion adds a newline; exact index is resolved after we fetch
+  builder.index += 2;
 
-  // 2) Apply current requests, then fetch document structure to get table cell indices
-  await docs.documents.batchUpdate({ documentId: docId, requestBody: { requests: builder.getRequests() }});
+  await docs.documents.batchUpdate({
+    documentId: docId,
+    requestBody: { requests: builder.getRequests() },
+  });
+
   const doc = await docs.documents.get({ documentId: docId });
-
-  // 3) Locate the last inserted table (simplest: take the last Table element in body)
-  const bodyContent = doc.data.body?.content || [];
-  const tableEl = [...bodyContent].reverse().find(el => el.table);
+  const bodyContent = doc.data.body?.content ?? [];
+  const tableEl = [...bodyContent].reverse().find((el) => el.table);
   if (!tableEl?.table) return;
 
-  // 4) Build a second batch to fill header row and body cells
   const fill: DocsRequest[] = [];
-  headers.forEach((h, col) => {
-    const startIndex = tableEl.table!.tableRows[0].tableCells[col].startIndex! + 1;
-    fill.push({ insertText: { location: { index: startIndex }, text: h }});
+  headers.forEach((header, col) => {
+    const startIndex =
+      (tableEl.table?.tableRows?.[0]?.tableCells?.[col]?.startIndex ?? 0) + 1;
+    fill.push({
+      insertText: { location: { index: startIndex }, text: header },
+    });
     fill.push({
       updateTextStyle: {
-        range: { startIndex, endIndex: startIndex + h.length },
-        textStyle: { bold: true }, fields: "bold"
-      }
+        range: { startIndex, endIndex: startIndex + header.length },
+        textStyle: { bold: true },
+        fields: "bold",
+      },
     });
   });
-  rows.forEach((r, row) => r.forEach((text, col) => {
-    const startIndex = tableEl.table!.tableRows[row + 1].tableCells[col].startIndex! + 1;
-    fill.push({ insertText: { location: { index: startIndex }, text }});
-  }));
-  await docs.documents.batchUpdate({ documentId: docId, requestBody: { requests: fill }});
+
+  rows.forEach((row, rowIdx) => {
+    row.forEach((text, col) => {
+      const startIndex =
+        (tableEl.table?.tableRows?.[rowIdx + 1]?.tableCells?.[col]?.startIndex ??
+          0) + 1;
+      fill.push({ insertText: { location: { index: startIndex }, text } });
+    });
+  });
+
+  await docs.documents.batchUpdate({
+    documentId: docId,
+    requestBody: { requests: fill },
+  });
 }
 
 function buildRequests(pack: TLessonPack): DocsRequest[] {
   const builder = new DocsBuilder();
-  builder.addHeading(1, pack.title);
 
+  builder.addHeading(1, pack.title);
   if (pack.motionOrTopic) {
     builder.addParagraph(`Motion: ${pack.motionOrTopic}`);
   }
-
   if (pack.context) {
     builder.addParagraph(`Context: ${pack.context}`);
   }
@@ -251,21 +276,25 @@ function buildRequests(pack: TLessonPack): DocsRequest[] {
   builder.addHeading(2, "First Principles");
   builder.addParagraph(`Burden: ${pack.firstPrinciples.burden}`);
   builder.addParagraph(`Metric: ${pack.firstPrinciples.metric}`);
+
   if (pack.firstPrinciples.assumptions.length) {
     builder.addParagraph("Assumptions:");
     builder.addBulletList(pack.firstPrinciples.assumptions);
   }
+
   if (pack.firstPrinciples.theories.length) {
     builder.addParagraph("Theories:");
     builder.addBulletList(pack.firstPrinciples.theories);
   }
+
   if (pack.firstPrinciples.tests) {
     builder.addParagraph("Tests:");
     builder.addBulletList(pack.firstPrinciples.tests);
   }
 
-  formatArgumentSection(builder, "Government Case", pack.govCase);
-  formatArgumentSection(builder, "Opposition Case", pack.oppCase);
+  const labels = caseHeadingLabels();
+  formatArgumentSection(builder, labels.gov, pack.govCase);
+  formatArgumentSection(builder, labels.opp, pack.oppCase);
 
   if (pack.counterCases && pack.counterCases.length) {
     formatArgumentSection(builder, "Counter Cases", pack.counterCases);
@@ -286,18 +315,22 @@ function buildRequests(pack: TLessonPack): DocsRequest[] {
 
   builder.addHeading(2, "Weighing");
   builder.addParagraph(`Method: ${pack.weighing.method}`);
+
   if (pack.weighing.adjudicatorNotes.length) {
     builder.addParagraph("Adjudicator Notes:");
     builder.addBulletList(pack.weighing.adjudicatorNotes);
   }
+
   if (pack.weighing.commonPitfalls.length) {
     builder.addParagraph("Common Pitfalls:");
     builder.addBulletList(pack.weighing.commonPitfalls);
   }
+
   if (pack.weighing.POIAdvice && pack.weighing.POIAdvice.length) {
     builder.addParagraph("POI Advice:");
     builder.addBulletList(pack.weighing.POIAdvice);
   }
+
   if (pack.weighing.whipAdvice && pack.weighing.whipAdvice.length) {
     builder.addParagraph("Whip Advice:");
     builder.addBulletList(pack.weighing.whipAdvice);
@@ -318,7 +351,7 @@ function buildRequests(pack: TLessonPack): DocsRequest[] {
   if (pack.examplesBank.length) {
     builder.addHeading(2, "Examples Bank");
     pack.examplesBank.forEach((example) => {
-      builder.addParagraph(`${example.label}`);
+      builder.addParagraph(example.label);
       builder.addParagraph(`What happened: ${example.whatHappened}`);
       builder.addParagraph(`Why it matters: ${example.whyItMatters}`);
       builder.addParagraph("How to use:");
@@ -344,7 +377,9 @@ function buildRequests(pack: TLessonPack): DocsRequest[] {
 function resolveTitle(pack: TLessonPack): string {
   if (pack.title) return pack.title;
   if (pack.motionOrTopic) return pack.motionOrTopic;
-  if (pack.inputMetadata.filename) return `Lesson Pack – ${pack.inputMetadata.filename}`;
+  if (pack.inputMetadata.filename) {
+    return `Lesson Pack – ${pack.inputMetadata.filename}`;
+  }
   return "Lesson Pack";
 }
 
@@ -367,7 +402,6 @@ export async function publishLessonPack(
   const docs = google.docs({ version: "v1", auth });
 
   const title = resolveTitle(pack);
-
   const parents = config.exportFolderId ? [config.exportFolderId] : undefined;
 
   const createResponse = await drive.files.create({
@@ -395,6 +429,8 @@ export async function publishLessonPack(
 
   return {
     docId,
-    docUrl: createResponse.data.webViewLink ?? `https://docs.google.com/document/d/${docId}/edit`,
+    docUrl:
+      createResponse.data.webViewLink ??
+      `https://docs.google.com/document/d/${docId}/edit`,
   };
 }
