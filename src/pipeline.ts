@@ -36,6 +36,11 @@ const MAX_FILE_SIZE_BYTES = resolveNumericEnv(
   50 * 1024 * 1024,
   "MAX_FILE_SIZE_BYTES"
 ); // 50MB default
+const MAX_CONCURRENT_FILES = resolveNumericEnv(
+  process.env.MAX_CONCURRENT_FILES,
+  3,
+  "MAX_CONCURRENT_FILES"
+);
 
 export type DocumentKind = "pdf" | "markdown" | "raw-notes";
 
@@ -262,6 +267,37 @@ async function processSingleFile(params: {
   }
 }
 
+/**
+ * Process a single file with logging and error handling.
+ * Encapsulates preprocessing, agent execution, and result reporting.
+ */
+async function processFileWithLogging(
+  file: string,
+  runtime: AgentRuntimeConfig
+): Promise<FileProcessingResult> {
+  console.log(`Processing ${path.relative(process.cwd(), file)}...`);
+
+  try {
+    const doc = await preprocessDocument(file);
+    const result = await processSingleFile({ doc, runtime });
+    if (!result.success && result.error) {
+      console.error(`❌ Failed to process ${doc.filename}: ${result.error}`);
+    } else {
+      console.log(`✅ Successfully processed ${doc.filename}`);
+    }
+    return result;
+  } catch (error) {
+    // Catch preprocessing errors (file validation, reading, parsing)
+    const errorMessage = (error as Error).message;
+    console.error(`❌ Failed to preprocess ${path.basename(file)}: ${errorMessage}`);
+    return {
+      file,
+      success: false,
+      error: errorMessage,
+    };
+  }
+}
+
 export async function runPipeline(
   client: OpenAI,
   opts?: { inputDir?: string }
@@ -279,28 +315,14 @@ export async function runPipeline(
   }
 
   const results: FileProcessingResult[] = [];
-  for (const file of files) {
-    console.log(`Processing ${path.relative(process.cwd(), file)}...`);
 
-    try {
-      const doc = await preprocessDocument(file);
-      const result = await processSingleFile({ doc, runtime });
-      if (!result.success && result.error) {
-        console.error(`❌ Failed to process ${doc.filename}: ${result.error}`);
-      } else {
-        console.log(`✅ Successfully processed ${doc.filename}`);
-      }
-      results.push(result);
-    } catch (error) {
-      // Catch preprocessing errors (file validation, reading, parsing)
-      const errorMessage = (error as Error).message;
-      console.error(`❌ Failed to preprocess ${path.basename(file)}: ${errorMessage}`);
-      results.push({
-        file,
-        success: false,
-        error: errorMessage,
-      });
-    }
+  // Process files in concurrent batches to improve throughput
+  for (let i = 0; i < files.length; i += MAX_CONCURRENT_FILES) {
+    const batch = files.slice(i, i + MAX_CONCURRENT_FILES);
+    const batchResults = await Promise.all(
+      batch.map(file => processFileWithLogging(file, runtime))
+    );
+    results.push(...batchResults);
   }
 
   return results;
