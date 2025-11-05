@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 
 import { google, docs_v1 } from "googleapis";
@@ -15,6 +16,72 @@ type PublishResult = {
 
 const DOCS_SCOPE = "https://www.googleapis.com/auth/documents";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const FINGERPRINT_PROPERTY_KEY = "debatingnotes_fingerprint";
+
+/**
+ * Generate a SHA-256 hash fingerprint from lesson pack content
+ * Used for idempotent publishing (detect duplicate content)
+ */
+function generateContentFingerprint(pack: TLessonPack): string {
+  // Create a stable string representation of the core content
+  const contentString = JSON.stringify({
+    title: pack.title,
+    motionOrTopic: pack.motionOrTopic,
+    context: pack.context,
+    govCase: pack.govCase,
+    oppCase: pack.oppCase,
+    // Exclude inputMetadata as it may vary (e.g., different filenames for same content)
+  });
+
+  return crypto.createHash("sha256").update(contentString).digest("hex");
+}
+
+/**
+ * Retry wrapper with exponential backoff for transient failures
+ * Handles 429 (rate limit) and 5xx (server errors) from Google APIs
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: {
+    maxRetries?: number;
+    baseDelay?: number;
+    operationName?: string;
+  } = {}
+): Promise<T> {
+  const { maxRetries = 4, baseDelay = 1000, operationName = "API call" } = options;
+
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      // Google's gaxios client exposes HTTP status on error.response.status
+      const httpStatus = error?.response?.status || error?.status || error?.code;
+
+      const isRetryable =
+        httpStatus === 429 || // Rate limit
+        httpStatus === 503 || // Service unavailable
+        (httpStatus >= 500 && httpStatus < 600) || // Server errors
+        error?.code === "ECONNRESET" || // Connection reset
+        error?.code === "ETIMEDOUT" || // Timeout
+        error?.message?.includes("ECONNRESET") ||
+        error?.message?.includes("ETIMEDOUT");
+
+      const isLastAttempt = attempt === maxRetries + 1;
+
+      if (!isRetryable || isLastAttempt) {
+        throw error;
+      }
+
+      const delay = baseDelay * Math.pow(2, attempt - 1);
+      console.warn(
+        `${operationName} failed (attempt ${attempt}/${maxRetries + 1}, status: ${httpStatus}): ${error.message}. Retrying in ${delay}ms...`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  throw new Error("Retry logic failed unexpectedly");
+}
 
 async function getAuthClient(
   config: GoogleConfiguration
@@ -50,6 +117,47 @@ async function getAuthClient(
   const tokens = JSON.parse(fs.readFileSync(tokenPath, "utf8"));
   oauth2Client.setCredentials(tokens);
   return oauth2Client;
+}
+
+/**
+ * Search for existing Google Doc with matching content fingerprint
+ * Returns the document ID if found, null otherwise
+ */
+async function findExistingDocByFingerprint(
+  drive: any,
+  fingerprint: string,
+  folderId?: string
+): Promise<string | null> {
+  try {
+    const query = folderId
+      ? `'${folderId}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false`
+      : `mimeType='application/vnd.google-apps.document' and trashed=false`;
+
+    const response = await withRetry(
+      () =>
+        drive.files.list({
+          q: query,
+          fields: "files(id, name, appProperties)",
+          pageSize: 100,
+          supportsAllDrives: true,
+        }),
+      { operationName: "Drive file search" }
+    );
+
+    const files = (response as any).data.files || [];
+
+    for (const file of files) {
+      if (file.appProperties?.[FINGERPRINT_PROPERTY_KEY] === fingerprint) {
+        console.log(`Found existing document with matching fingerprint: ${file.name} (${file.id})`);
+        return file.id;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.warn(`Failed to search for existing documents: ${(error as Error).message}`);
+    return null; // Fail gracefully - create new doc instead
+  }
 }
 
 class DocsBuilder {
@@ -221,12 +329,20 @@ async function insertAndFillTable(
   });
   builder.index += 2;
 
-  await docs.documents.batchUpdate({
-    documentId: docId,
-    requestBody: { requests: builder.getRequests() },
-  });
+  await withRetry(
+    () =>
+      docs.documents.batchUpdate({
+        documentId: docId,
+        requestBody: { requests: builder.getRequests() },
+      }),
+    { operationName: "Insert table" }
+  );
 
-  const doc = await docs.documents.get({ documentId: docId });
+  const doc = await withRetry(
+    () => docs.documents.get({ documentId: docId }),
+    { operationName: "Get document" }
+  );
+
   const bodyContent = doc.data.body?.content ?? [];
   const tableEl = [...bodyContent].reverse().find((el) => el.table);
   if (!tableEl?.table) return;
@@ -256,10 +372,14 @@ async function insertAndFillTable(
     });
   });
 
-  await docs.documents.batchUpdate({
-    documentId: docId,
-    requestBody: { requests: fill },
-  });
+  await withRetry(
+    () =>
+      docs.documents.batchUpdate({
+        documentId: docId,
+        requestBody: { requests: fill },
+      }),
+    { operationName: "Fill table" }
+  );
 }
 
 function buildRequests(pack: TLessonPack): DocsRequest[] {
@@ -403,34 +523,108 @@ export async function publishLessonPack(
 
   const title = resolveTitle(pack);
   const parents = config.exportFolderId ? [config.exportFolderId] : undefined;
+  const fingerprint = generateContentFingerprint(pack);
 
-  const createResponse = await drive.files.create({
-    requestBody: {
-      name: title,
-      mimeType: "application/vnd.google-apps.document",
-      parents,
-    },
-    fields: "id, webViewLink",
-    supportsAllDrives: true,
-  });
+  // Search for existing document with matching fingerprint (idempotent publishing)
+  const existingDocId = await findExistingDocByFingerprint(
+    drive,
+    fingerprint,
+    config.exportFolderId
+  );
 
-  const docId = createResponse.data.id;
-  if (!docId) {
-    throw new Error("Failed to create Google Doc – no file ID returned");
+  let docId: string;
+  let isUpdate = false;
+
+  if (existingDocId) {
+    // Update existing document
+    docId = existingDocId;
+    isUpdate = true;
+    console.log(`Updating existing document: ${title}`);
+
+    // Clear existing content by deleting everything except the first character
+    const doc = await withRetry(
+      () => docs.documents.get({ documentId: docId }),
+      { operationName: "Get existing document" }
+    );
+
+    const endIndex = doc.data.body?.content?.[doc.data.body.content.length - 1]?.endIndex;
+    if (endIndex && endIndex > 1) {
+      await withRetry(
+        () =>
+          docs.documents.batchUpdate({
+            documentId: docId,
+            requestBody: {
+              requests: [
+                {
+                  deleteContentRange: {
+                    range: { startIndex: 1, endIndex: endIndex - 1 },
+                  },
+                },
+              ],
+            },
+          }),
+        { operationName: "Clear existing document content" }
+      );
+    }
+  } else {
+    // Create new document with fingerprint
+    console.log(`Creating new document: ${title}`);
+    const createResponse = await withRetry(
+      () =>
+        drive.files.create({
+          requestBody: {
+            name: title,
+            mimeType: "application/vnd.google-apps.document",
+            parents,
+            appProperties: {
+              [FINGERPRINT_PROPERTY_KEY]: fingerprint,
+            },
+          },
+          fields: "id, webViewLink",
+          supportsAllDrives: true,
+        }),
+      { operationName: "Create new document" }
+    );
+
+    const createdId = (createResponse as any).data.id;
+    if (!createdId) {
+      throw new Error("Failed to create Google Doc – no file ID returned");
+    }
+    docId = createdId;
   }
 
+  // Build and apply content
   const requests = buildRequests(pack);
   if (requests.length) {
-    await docs.documents.batchUpdate({
-      documentId: docId,
-      requestBody: { requests },
-    });
+    await withRetry(
+      () =>
+        docs.documents.batchUpdate({
+          documentId: docId,
+          requestBody: { requests },
+        }),
+      { operationName: "Apply document content" }
+    );
   }
 
-  return {
-    docId,
-    docUrl:
-      createResponse.data.webViewLink ??
-      `https://docs.google.com/document/d/${docId}/edit`,
-  };
+  // Get the final URL
+  const fileMetadata = await withRetry(
+    () =>
+      drive.files.get({
+        fileId: docId,
+        fields: "webViewLink",
+        supportsAllDrives: true,
+      }),
+    { operationName: "Get document URL" }
+  );
+
+  const docUrl =
+    fileMetadata.data.webViewLink ?? `https://docs.google.com/document/d/${docId}/edit`;
+
+  if (isUpdate) {
+    console.log(`✓ Updated existing document: ${docUrl}`);
+  } else {
+    console.log(`✓ Created new document: ${docUrl}`);
+  }
+
+  return { docId, docUrl };
 }

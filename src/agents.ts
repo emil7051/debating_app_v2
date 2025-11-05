@@ -29,6 +29,30 @@ const MAX_ATTEMPTS_DEFAULT = Math.max(
   Number(process.env.JSON_MAX_ATTEMPTS ?? 5)
 );
 
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS ?? 120000); // 2 minutes default
+
+/**
+ * Wrap a promise with a timeout to prevent indefinite hanging
+ * @param promise The promise to wrap
+ * @param timeoutMs Timeout in milliseconds
+ * @param operationName Name of the operation for error messages
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  operationName: string
+): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`${operationName} timed out after ${timeoutMs}ms`)),
+        timeoutMs
+      )
+    ),
+  ]);
+}
+
 const STRATEGIST_FORMAT_HINT = `{
   "motionOrTopic": string | null,
   "context": string | null,
@@ -168,11 +192,15 @@ async function callJsonModel<T>(params: {
   ];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const completion = await client.chat.completions.create({
-      model,
-      response_format: { type: "json_object" },
-      messages,
-    });
+    const completion = await withTimeout(
+      client.chat.completions.create({
+        model,
+        response_format: { type: "json_object" },
+        messages,
+      }),
+      OPENAI_TIMEOUT_MS,
+      `OpenAI API call (attempt ${attempt}/${maxAttempts})`
+    );
 
     const message = completion.choices[0]?.message;
     if (!message) {
