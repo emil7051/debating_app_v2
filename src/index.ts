@@ -21,7 +21,14 @@ async function main() {
     return;
   }
 
-  console.log("\nRun summary:\n");
+  // Count successes and failures
+  const successful = results.filter((r) => r.success).length;
+  const failed = results.filter((r) => !r.success).length;
+
+  console.log("\n" + "=".repeat(60));
+  console.log("Run Summary");
+  console.log("=".repeat(60) + "\n");
+
   for (const result of results) {
     if (result.success) {
       console.log(`✅ ${result.file}`);
@@ -34,6 +41,15 @@ async function main() {
         console.log(`   Error: ${result.error}`);
       }
     }
+  }
+
+  console.log("\n" + "=".repeat(60));
+  console.log(`Total: ${results.length} | Success: ${successful} | Failed: ${failed}`);
+  console.log("=".repeat(60) + "\n");
+
+  // Exit with non-zero code if any files failed (for CI/CD)
+  if (failed > 0) {
+    process.exitCode = 1;
   }
 }
 
