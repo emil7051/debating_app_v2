@@ -10,8 +10,32 @@ import { appConfig } from "./config";
 import { publishLessonPack } from "./googleDocs";
 import { LessonPack } from "./schemas";
 
-const MAX_TEXT_CHARS = Number(process.env.MAX_TEXT_CHARS ?? 18000);
-const MAX_FILE_SIZE_BYTES = Number(process.env.MAX_FILE_SIZE_BYTES ?? 50 * 1024 * 1024); // 50MB default
+function resolveNumericEnv(
+  varValue: string | undefined,
+  defaultValue: number,
+  envVarName: string
+): number {
+  if (varValue === undefined) {
+    return defaultValue;
+  }
+
+  const parsed = Number(varValue);
+  if (!Number.isFinite(parsed)) {
+    console.warn(
+      `Invalid value for ${envVarName} ("${varValue}"). Falling back to default of ${defaultValue}.`
+    );
+    return defaultValue;
+  }
+
+  return parsed;
+}
+
+const MAX_TEXT_CHARS = resolveNumericEnv(process.env.MAX_TEXT_CHARS, 18000, "MAX_TEXT_CHARS");
+const MAX_FILE_SIZE_BYTES = resolveNumericEnv(
+  process.env.MAX_FILE_SIZE_BYTES,
+  50 * 1024 * 1024,
+  "MAX_FILE_SIZE_BYTES"
+); // 50MB default
 
 export type DocumentKind = "pdf" | "markdown" | "raw-notes";
 
