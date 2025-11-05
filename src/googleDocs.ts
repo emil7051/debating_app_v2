@@ -54,12 +54,17 @@ async function withRetry<T>(
     try {
       return await fn();
     } catch (error: any) {
+      // Google's gaxios client exposes HTTP status on error.response.status
+      const httpStatus = error?.response?.status || error?.status || error?.code;
+
       const isRetryable =
-        error?.code === 429 || // Rate limit
-        error?.code === 503 || // Service unavailable
-        (error?.code >= 500 && error?.code < 600) || // Server errors
-        error?.message?.includes("ECONNRESET") || // Connection reset
-        error?.message?.includes("ETIMEDOUT"); // Timeout
+        httpStatus === 429 || // Rate limit
+        httpStatus === 503 || // Service unavailable
+        (httpStatus >= 500 && httpStatus < 600) || // Server errors
+        error?.code === "ECONNRESET" || // Connection reset
+        error?.code === "ETIMEDOUT" || // Timeout
+        error?.message?.includes("ECONNRESET") ||
+        error?.message?.includes("ETIMEDOUT");
 
       const isLastAttempt = attempt === maxRetries + 1;
 
@@ -69,7 +74,7 @@ async function withRetry<T>(
 
       const delay = baseDelay * Math.pow(2, attempt - 1);
       console.warn(
-        `${operationName} failed (attempt ${attempt}/${maxRetries + 1}): ${error.message}. Retrying in ${delay}ms...`
+        `${operationName} failed (attempt ${attempt}/${maxRetries + 1}, status: ${httpStatus}): ${error.message}. Retrying in ${delay}ms...`
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
